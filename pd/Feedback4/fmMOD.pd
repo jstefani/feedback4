@@ -1,0 +1,26 @@
+#N canvas 338 124 1032 709 10;
+#X obj 170 167 +~;
+#X obj 185 99 phasor~ 0;
+#X obj 170 247 *~;
+#X obj 19 33 inlet~;
+#X text 19 12 Phase Mod;
+#X obj 428 25 inlet~;
+#X text 428 4 Index \, Amp of oscil;
+#X obj 225 33 inlet~;
+#X text 99 8 Base frequency;
+#X obj 170 335 outlet~;
+#X text 224 3 modulation (rsp carrier) factor;
+#X text 101 408 Basic Oscillator that can easily be phase modulated.
+;
+#X obj 185 64 *~ 0;
+#X obj 106 33 inlet;
+#X obj 170 201 cos~;
+#X connect 0 0 14 0;
+#X connect 1 0 0 1;
+#X connect 2 0 9 0;
+#X connect 3 0 0 0;
+#X connect 5 0 2 1;
+#X connect 7 0 12 0;
+#X connect 12 0 1 0;
+#X connect 13 0 12 1;
+#X connect 14 0 2 0;

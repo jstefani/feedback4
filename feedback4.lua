@@ -1,0 +1,591 @@
+-- feedback4
+-- 4-op FM, custom algorithm
+--
+-- clone of Organelle
+-- Feedback4 (PD / FM8 expert)
+--
+-- E1 page
+-- PLAY  E2 preset  E3 trans
+-- OP    E2 ratio   E3 out
+--       K2+E  A/D
+--       K3+E  S/R
+--       K1+E  pan / env amt
+-- ALGO  E2 cell    E3 amt
+-- MACRO E2 dest    E3 scale
+--       K2 which
+-- K2 play note (play page)
+-- K3 all notes off
+-- midi in. PARAMS for rest.
+
+engine.name = "Feedback4"
+
+local MusicUtil = require "musicutil"
+local factory = include "lib/presets"
+
+local OPS = 4
+local PAGES = { "play", "op1", "op2", "op3", "op4", "algo", "macro" }
+local ENVSRC = { "off", "op1", "op2", "op3", "op4" }
+local PNAMES = {
+  "atk", "dec", "sus", "rel",
+  "m1", "m2", "m3", "m4",
+  "ratio", "out", "--", "envsrc", "envamt", "pan"
+}
+
+local page = 1
+local k2, k3, k1 = false, false, false
+local algo_cell = 1 -- 1..16, row-major from->to
+local macro_i = 1
+local loading = false
+local applying_macro = false
+
+local active = {}
+local held = {}
+local next_id = 1
+local test_note = nil
+local screen_dirty = true
+
+local function pid(op, name)
+  return string.format("op%d_%s", op, name)
+end
+
+local function sq(x)
+  return x * x
+end
+
+-- operator-edit.pd: slider squared, then OSC-yo scales to ms
+local function atk_sec(x)
+  return (sq(x) * 300 + 0.5) / 1000
+end
+
+local function dec_sec(x)
+  return sq(x)
+end
+
+local function sus_lvl(x)
+  return sq(x)
+end
+
+local function rel_sec(x)
+  return (sq(x) * 2000 + 10) / 1000
+end
+
+local function out_lvl(x)
+  return sq(x)
+end
+
+local function fmt_ms(sec)
+  if sec < 0.001 then return "0.5ms" end
+  if sec < 1 then return string.format("%.0fms", sec * 1000) end
+  return string.format("%.2fs", sec)
+end
+
+local function fmt_num(x, digits)
+  digits = digits or 2
+  local m = 10 ^ digits
+  local v = math.floor(x * m + (x >= 0 and 0.5 or -0.5)) / m
+  if math.abs(v - math.floor(v + 0.5)) < 1e-9 then
+    return string.format("%.0f", v)
+  end
+  return string.format("%." .. digits .. "f", v)
+end
+
+local function dest_name(d)
+  d = math.floor(d + 0.5)
+  if d < 1 or d > 56 then return "off" end
+  local op = math.floor((d - 1) / 14) + 1
+  local p = ((d - 1) % 14) + 1
+  if PNAMES[p] == "--" then return "off" end
+  return string.format("op%d %s", op, PNAMES[p])
+end
+
+local RANGES = {
+  atk = {0, 32}, dec = {0, 32}, sus = {0, 32}, rel = {0, 32},
+  m1 = {-200, 200}, m2 = {-200, 200}, m3 = {-200, 200}, m4 = {-200, 200},
+  ratio = {-32, 32}, out = {0, 4},
+  envsrc = {0, 4}, envamt = {-100, 100}, pan = {0, 1},
+}
+
+local function dest_id(d)
+  d = math.floor(d + 0.5)
+  if d < 1 or d > 56 then return nil end
+  local op = math.floor((d - 1) / 14) + 1
+  local p = ((d - 1) % 14) + 1
+  if PNAMES[p] == "--" then return nil end
+  return pid(op, PNAMES[p]), PNAMES[p]
+end
+
+local function dirty()
+  screen_dirty = true
+end
+
+local function send_op(op)
+  engine.op(
+    op,
+    atk_sec(params:get(pid(op, "atk"))),
+    dec_sec(params:get(pid(op, "dec"))),
+    sus_lvl(params:get(pid(op, "sus"))),
+    rel_sec(params:get(pid(op, "rel"))),
+    params:get(pid(op, "m1")),
+    params:get(pid(op, "m2")),
+    params:get(pid(op, "m3")),
+    params:get(pid(op, "m4")),
+    params:get(pid(op, "ratio")),
+    out_lvl(params:get(pid(op, "out"))),
+    params:get(pid(op, "envsrc")),
+    params:get(pid(op, "envamt")),
+    params:get(pid(op, "pan"))
+  )
+end
+
+local function apply_macro(i)
+  if loading or applying_macro then return end
+  local dest = params:get("macro_" .. i .. "_dest")
+  local id, name = dest_id(dest)
+  if id == nil then return end
+  local val = params:get("macro_" .. i) * params:get("macro_" .. i .. "_scale")
+  if name == "envsrc" then
+    val = math.floor(val + 0.5)
+  end
+  local r = RANGES[name]
+  if r then val = util.clamp(val, r[1], r[2]) end
+  applying_macro = true
+  params:set(id, val)
+  applying_macro = false
+end
+
+local function note_on(note, vel)
+  local id = next_id
+  next_id = next_id + 1
+  if active[note] then engine.noteKill(active[note]) end
+  active[note] = id
+  held[note] = true
+  local hz = MusicUtil.note_num_to_freq(note + params:get("transpose"))
+  engine.noteOn(id, hz, vel or 0.85)
+  dirty()
+end
+
+local function note_off(note)
+  if active[note] then
+    engine.noteOff(active[note])
+    active[note] = nil
+  end
+  held[note] = nil
+  dirty()
+end
+
+local function all_off()
+  engine.stopAll()
+  active = {}
+  held = {}
+  test_note = nil
+  dirty()
+end
+
+local function load_factory(idx)
+  local p = factory[idx]
+  if p == nil then return end
+  local prev_loading = loading
+  loading = true
+  for op = 1, OPS do
+    local o = p.ops[op]
+    params:set(pid(op, "atk"), util.clamp(o.atk, 0, 32))
+    params:set(pid(op, "dec"), util.clamp(o.dec, 0, 32))
+    params:set(pid(op, "sus"), util.clamp(o.sus, 0, 32))
+    params:set(pid(op, "rel"), util.clamp(o.rel, 0, 32))
+    params:set(pid(op, "m1"), util.clamp(o.m1, -200, 200))
+    params:set(pid(op, "m2"), util.clamp(o.m2, -200, 200))
+    params:set(pid(op, "m3"), util.clamp(o.m3, -200, 200))
+    params:set(pid(op, "m4"), util.clamp(o.m4, -200, 200))
+    params:set(pid(op, "ratio"), util.clamp(o.ratio, -32, 32))
+    params:set(pid(op, "out"), util.clamp(o.out, 0, 4))
+    params:set(pid(op, "envsrc"), util.clamp(math.floor(o.envsrc + 0.5), 0, 4))
+    params:set(pid(op, "envamt"), util.clamp(o.envamt, -100, 100))
+    params:set(pid(op, "pan"), util.clamp(o.pan, 0, 1))
+  end
+  for i = 1, 3 do
+    local m = p.macros[i]
+    params:set("macro_" .. i .. "_dest", util.clamp(math.floor(m.dest + 0.5), 0, 56))
+    params:set("macro_" .. i .. "_scale", util.clamp(m.scale, -100, 100))
+  end
+  loading = prev_loading
+  for op = 1, OPS do send_op(op) end
+  dirty()
+end
+
+local function add_op_params(op)
+  params:add_group("op " .. op, 13)
+
+  local function touch()
+    send_op(op)
+    dirty()
+  end
+
+  params:add_control(pid(op, "atk"), "attack",
+    controlspec.new(0, 32, "lin", 0, 0, ""))
+  params:set_action(pid(op, "atk"), function() touch() end)
+
+  params:add_control(pid(op, "dec"), "decay",
+    controlspec.new(0, 32, "lin", 0, 0.3, ""))
+  params:set_action(pid(op, "dec"), function() touch() end)
+
+  params:add_control(pid(op, "sus"), "sustain",
+    controlspec.new(0, 32, "lin", 0, 0.7, ""))
+  params:set_action(pid(op, "sus"), function() touch() end)
+
+  params:add_control(pid(op, "rel"), "release",
+    controlspec.new(0, 32, "lin", 0, 0.2, ""))
+  params:set_action(pid(op, "rel"), function() touch() end)
+
+  params:add_control(pid(op, "ratio"), "ratio",
+    controlspec.new(-32, 32, "lin", 0, 1, "", 0.005))
+  params:set_action(pid(op, "ratio"), function() touch() end)
+
+  params:add_control(pid(op, "out"), "out",
+    controlspec.new(0, 4, "lin", 0, 0.7, ""))
+  params:set_action(pid(op, "out"), function() touch() end)
+
+  for d = 1, 4 do
+    params:add_control(pid(op, "m" .. d), "-> op" .. d,
+      controlspec.new(-200, 200, "lin", 0, 0, "", 0.005))
+    params:set_action(pid(op, "m" .. d), function() touch() end)
+  end
+
+  params:add_number(pid(op, "envsrc"), "freq env", 0, 4, 0, function(p)
+    return ENVSRC[p:get() + 1]
+  end)
+  params:set_action(pid(op, "envsrc"), function() touch() end)
+
+  params:add_control(pid(op, "envamt"), "env amt",
+    controlspec.new(-100, 100, "lin", 0, 0, "", 0.005))
+  params:set_action(pid(op, "envamt"), function() touch() end)
+
+  params:add_control(pid(op, "pan"), "pan",
+    controlspec.new(0, 1, "lin", 0, 0.5, ""))
+  params:set_action(pid(op, "pan"), function() touch() end)
+end
+
+function init()
+  params:add_separator("feedback4")
+
+  params:add_number("preset", "preset", 1, #factory, 1)
+  params:set_action("preset", function(x)
+    load_factory(x)
+  end)
+
+  params:add_number("transpose", "transpose", -24, 24, 0)
+
+  params:add_control("amp", "amp",
+    controlspec.new(0, 1, "lin", 0, 0.7, ""))
+  params:set_action("amp", function(x)
+    engine.amp(x)
+    dirty()
+  end)
+
+  params:add_trigger("all_notes_off", "all notes off")
+  params:set_action("all_notes_off", function() all_off() end)
+
+  params:add_number("midi_channel", "midi channel", 0, 16, 0, function(p)
+    return p:get() == 0 and "all" or tostring(p:get())
+  end)
+
+  for op = 1, OPS do add_op_params(op) end
+
+  params:add_group("macros", 9)
+  for i = 1, 3 do
+    params:add_control("macro_" .. i, "macro " .. i,
+      controlspec.new(0, 1, "lin", 0, 0, ""))
+    params:set_action("macro_" .. i, function()
+      apply_macro(i)
+      dirty()
+    end)
+    params:add_number("macro_" .. i .. "_dest", "m" .. i .. " dest", 0, 56, 0,
+      function(p) return dest_name(p:get()) end)
+    params:set_action("macro_" .. i .. "_dest", function() dirty() end)
+    params:add_control("macro_" .. i .. "_scale", "m" .. i .. " scale",
+      controlspec.new(-100, 100, "lin", 0, 1, "", 0.005))
+    params:set_action("macro_" .. i .. "_scale", function() dirty() end)
+  end
+
+  -- load factory 1 without double-firing through the preset action
+  loading = true
+  params:bang()
+  loading = false
+  load_factory(params:get("preset"))
+  engine.amp(params:get("amp"))
+
+  local function midi_event(data)
+    local msg = midi.to_msg(data)
+    if msg.type == "clock" or msg.type == "start"
+        or msg.type == "stop" or msg.type == "continue" then
+      return
+    end
+    local ch = params:get("midi_channel")
+    if ch ~= 0 and msg.ch ~= ch then return end
+    if msg.type == "note_on" and msg.vel > 0 then
+      note_on(msg.note, msg.vel / 127)
+    elseif msg.type == "note_off"
+        or (msg.type == "note_on" and msg.vel == 0) then
+      note_off(msg.note)
+    elseif msg.type == "cc" and msg.cc == 123 then
+      all_off()
+    end
+  end
+
+  for i = 1, 16 do
+    local d = midi.connect(i)
+    d.event = midi_event
+  end
+
+  local redraw_metro = metro.init(function()
+    if screen_dirty then
+      screen_dirty = false
+      redraw()
+    end
+  end, 1 / 15)
+  redraw_metro:start()
+  dirty()
+end
+
+function cleanup()
+  all_off()
+end
+
+local function op_page()
+  if page >= 2 and page <= 5 then return page - 1 end
+  return nil
+end
+
+function enc(n, d)
+  if n == 1 then
+    page = util.clamp(page + d, 1, #PAGES)
+    dirty()
+    return
+  end
+
+  local op = op_page()
+  if page == 1 then
+    if n == 2 then
+      params:delta("preset", d)
+    else
+      if k1 then
+        params:delta("amp", d)
+      else
+        params:delta("transpose", d)
+      end
+    end
+  elseif op then
+    if k1 then
+      if n == 2 then params:delta(pid(op, "pan"), d)
+      else params:delta(pid(op, "envamt"), d) end
+    elseif k2 then
+      if n == 2 then params:delta(pid(op, "atk"), d)
+      else params:delta(pid(op, "dec"), d) end
+    elseif k3 then
+      if n == 2 then params:delta(pid(op, "sus"), d)
+      else params:delta(pid(op, "rel"), d) end
+    else
+      if n == 2 then params:delta(pid(op, "ratio"), d)
+      else params:delta(pid(op, "out"), d) end
+    end
+  elseif PAGES[page] == "algo" then
+    if n == 2 then
+      algo_cell = util.clamp(algo_cell + d, 1, 16)
+    else
+      local from = math.floor((algo_cell - 1) / 4) + 1
+      local to = ((algo_cell - 1) % 4) + 1
+      params:delta(pid(from, "m" .. to), d)
+    end
+    dirty()
+  elseif PAGES[page] == "macro" then
+    if n == 2 then
+      if k2 then
+        macro_i = util.clamp(macro_i + (d > 0 and 1 or -1), 1, 3)
+      else
+        params:delta("macro_" .. macro_i .. "_dest", d)
+      end
+    else
+      if k3 then
+        params:delta("macro_" .. macro_i, d)
+      else
+        params:delta("macro_" .. macro_i .. "_scale", d)
+      end
+    end
+    dirty()
+  end
+end
+
+function key(n, z)
+  if n == 1 then
+    k1 = z == 1
+  elseif n == 2 then
+    k2 = z == 1
+    if page == 1 then
+      if z == 1 then
+        local note = 60
+        test_note = note
+        note_on(note, 0.85)
+      elseif test_note then
+        note_off(test_note)
+        test_note = nil
+      end
+    end
+  elseif n == 3 then
+    k3 = z == 1
+    if z == 1 and (page == 1 or k1) then all_off() end
+  end
+  dirty()
+end
+
+local function held_names()
+  local notes = {}
+  for n, _ in pairs(held) do notes[#notes + 1] = n end
+  table.sort(notes)
+  if #notes == 0 then return "-" end
+  local s = {}
+  local nshow = math.min(#notes, 4)
+  for i = 1, nshow do
+    s[i] = MusicUtil.note_num_to_name(notes[i], true)
+  end
+  if #notes > 4 then s[#s + 1] = "+" end
+  return table.concat(s, " ")
+end
+
+local function row(y, label, value, hi)
+  screen.level(hi and 15 or 4)
+  screen.move(0, y)
+  screen.text(label)
+  screen.level(hi and 15 or 8)
+  screen.move(128, y)
+  screen.text_right(value)
+end
+
+local function env_bar(x, y, w, h, v)
+  v = util.clamp(v, 0, 1)
+  screen.level(2)
+  screen.rect(x, y, w, h)
+  screen.stroke()
+  if v > 0 then
+    local bh = math.max(1, math.floor(v * (h - 2)))
+    screen.level(10)
+    screen.rect(x + 1, y + h - 1 - bh, w - 2, bh)
+    screen.fill()
+  end
+end
+
+function redraw()
+  if norns.menu.status() then return end
+  screen.clear()
+  screen.aa(0)
+  screen.font_face(1)
+  screen.font_size(8)
+
+  screen.level(15)
+  screen.move(0, 8)
+  screen.text("feedback4")
+  screen.level(5)
+  screen.move(128, 8)
+  screen.text_right(PAGES[page])
+
+  local op = op_page()
+  if page == 1 then
+    row(22, "preset", string.format("%.0f / %.0f", params:get("preset"), #factory), true)
+    row(32, "trans",
+      (params:get("transpose") > 0 and "+" or "") .. tostring(params:get("transpose")),
+      not k1)
+    row(42, "amp", fmt_num(params:get("amp"), 2), k1)
+    screen.level(4)
+    screen.move(0, 54)
+    screen.text("notes")
+    screen.level(8)
+    screen.move(128, 54)
+    screen.text_right(held_names())
+    screen.level(3)
+    screen.move(0, 63)
+    screen.text("K2 note  K3 panic")
+  elseif op then
+    local focus
+    if k1 then focus = "pan/env"
+    elseif k2 then focus = "A/D"
+    elseif k3 then focus = "S/R"
+    else focus = "tone" end
+    screen.level(6)
+    screen.move(70, 8)
+    screen.text(focus)
+
+    row(20, "ratio", fmt_num(params:get(pid(op, "ratio")), 3), focus == "tone")
+    row(29, "out", fmt_num(params:get(pid(op, "out")), 2), focus == "tone")
+
+    env_bar(0, 33, 10, 14, util.clamp(params:get(pid(op, "atk")), 0, 1))
+    env_bar(12, 33, 10, 14, util.clamp(params:get(pid(op, "dec")), 0, 1))
+    env_bar(24, 33, 10, 14, util.clamp(params:get(pid(op, "sus")), 0, 1))
+    env_bar(36, 33, 10, 14, util.clamp(params:get(pid(op, "rel")), 0, 1))
+    screen.level(focus == "A/D" and 15 or (focus == "S/R" and 15 or 4))
+    screen.move(50, 40)
+    screen.text(string.format("A %s  D %s",
+      fmt_ms(atk_sec(params:get(pid(op, "atk")))),
+      fmt_ms(dec_sec(params:get(pid(op, "dec"))))))
+    screen.move(50, 48)
+    screen.text(string.format("S %s  R %s",
+      fmt_num(sus_lvl(params:get(pid(op, "sus"))), 2),
+      fmt_ms(rel_sec(params:get(pid(op, "rel"))))))
+
+    local src = params:get(pid(op, "envsrc"))
+    screen.level(focus == "pan/env" and 15 or 4)
+    screen.move(0, 56)
+    screen.text(string.format("pan %s  env %s %s",
+      fmt_num(params:get(pid(op, "pan")), 2),
+      ENVSRC[src + 1],
+      fmt_num(params:get(pid(op, "envamt")), 2)))
+
+    screen.level(3)
+    screen.move(0, 63)
+    local sends = {}
+    for d = 1, 4 do
+      sends[d] = fmt_num(params:get(pid(op, "m" .. d)), 2)
+    end
+    screen.text("-> " .. table.concat(sends, " "))
+  elseif PAGES[page] == "algo" then
+    local from_s = math.floor((algo_cell - 1) / 4) + 1
+    local to_s = ((algo_cell - 1) % 4) + 1
+    screen.level(6)
+    screen.move(70, 8)
+    screen.text(string.format("%d->%d", from_s, to_s))
+
+    screen.level(3)
+    screen.move(22, 18)
+    screen.text("1    2    3    4")
+    for from = 1, 4 do
+      local y = 18 + from * 10
+      screen.level(4)
+      screen.move(0, y)
+      screen.text(tostring(from))
+      for to = 1, 4 do
+        local x = 14 + (to - 1) * 28
+        local sel = (from == from_s and to == to_s)
+        local v = params:get(pid(from, "m" .. to))
+        screen.level(sel and 15 or (math.abs(v) > 0.001 and 10 or 3))
+        screen.move(x, y)
+        screen.text(fmt_num(v, 2))
+      end
+    end
+  elseif PAGES[page] == "macro" then
+    for i = 1, 3 do
+      local y = 14 + i * 14
+      local hi = i == macro_i
+      screen.level(hi and 15 or 4)
+      screen.move(0, y)
+      screen.text("M" .. i)
+      screen.move(16, y)
+      screen.text(dest_name(params:get("macro_" .. i .. "_dest")))
+      screen.move(128, y)
+      screen.text_right(string.format("x%s  %s",
+        fmt_num(params:get("macro_" .. i .. "_scale"), 2),
+        fmt_num(params:get("macro_" .. i), 2)))
+    end
+    screen.level(3)
+    screen.move(0, 63)
+    screen.text("K2 which  K3+E3 val")
+  end
+
+  screen.update()
+end

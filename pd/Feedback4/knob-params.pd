@@ -1,0 +1,60 @@
+#N canvas 185 23 1434 778 10;
+#X obj 166 376 pack 0 0 0, f 14;
+#X floatatom 204 271 5 0 0 0 - - -, f 5;
+#X floatatom 245 271 5 0 0 0 - - -, f 5;
+#X floatatom 166 92 5 0 0 0 - - -, f 5;
+#X obj 166 122 *, f 7;
+#X floatatom 205 92 5 0 0 0 - - -, f 5;
+#X floatatom 166 144 5 0 0 0 - - -, f 5;
+#X text 201 43 scale Param.;
+#X floatatom 204 145 5 0 0 0 - - -, f 5;
+#X obj 245 174 % 14;
+#X obj 204 174 / 14;
+#X obj 204 196 int;
+#X obj 245 218 + 1;
+#X msg 166 400 \; r\$2-\$3 \$1;
+#X obj 166 17 inlet;
+#X obj 205 57 inlet;
+#X text 200 14 knob inlet;
+#X obj 285 57 inlet;
+#X text 321 58 choose Param;
+#X obj 74 226 outlet;
+#X text 55 256 so you can preview the scaled number;
+#X obj 269 399 outlet;
+#X obj 319 399 outlet;
+#X text 474 70 these objects let you assign any parameter to the three
+knobs. The parameter and what it's scaled by is saved as part of the
+preset voice.;
+#X text 398 139 if you look in the VOICE PRESETS subpatch you will
+see a number system corresponding to the receive ('r') objects. there
+are 14 parameters for every operator.(14x4=56) One number corresponds
+to all the parameters. so operator 3's decay \, which is a 3-2 in the
+operator-editor \, is 43 but the 2 numbers are output so it's easier
+to follow 43 = 3-2;
+#X obj 204 218 + 1;
+#X obj 166 329 line;
+#X msg 166 304 \$1 40;
+#X obj 285 79 - 1;
+#X connect 0 0 13 0;
+#X connect 1 0 0 1;
+#X connect 1 0 21 0;
+#X connect 2 0 0 2;
+#X connect 2 0 22 0;
+#X connect 3 0 4 0;
+#X connect 4 0 6 0;
+#X connect 5 0 4 1;
+#X connect 6 0 19 0;
+#X connect 6 0 27 0;
+#X connect 8 0 9 0;
+#X connect 8 0 10 0;
+#X connect 9 0 12 0;
+#X connect 10 0 11 0;
+#X connect 11 0 25 0;
+#X connect 12 0 2 0;
+#X connect 14 0 3 0;
+#X connect 15 0 5 0;
+#X connect 17 0 28 0;
+#X connect 25 0 1 0;
+#X connect 26 0 0 0;
+#X connect 27 0 26 0;
+#X connect 28 0 8 0;
