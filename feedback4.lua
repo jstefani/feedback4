@@ -505,6 +505,7 @@ function init()
   end
 
   local redraw_metro = metro.init(function()
+    if page == 1 then screen_dirty = true end
     if screen_dirty then
       screen_dirty = false
       redraw()
@@ -643,6 +644,141 @@ local function env_bar(x, y, w, h, v)
   end
 end
 
+local function held_count()
+  local n = 0
+  for _ in pairs(held) do n = n + 1 end
+  return n
+end
+
+-- unit cube
+local CUBE_V = {
+  {-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
+  {-1, -1,  1}, {1, -1,  1}, {1, 1,  1}, {-1, 1,  1},
+}
+local CUBE_E = {
+  {1, 2}, {2, 3}, {3, 4}, {4, 1},
+  {5, 6}, {6, 7}, {7, 8}, {8, 5},
+  {1, 5}, {2, 6}, {3, 7}, {4, 8},
+}
+-- ops sit in a 2x2 that has depth, so rotation reads as 3d
+local OP_HOME = {
+  {-0.95,  0.45,  0.7},
+  { 0.95,  0.45,  0.7},
+  {-0.95, -0.55, -0.7},
+  { 0.95, -0.55, -0.7},
+}
+
+local function rot3(x, y, z, yaw, pitch)
+  local c, s = math.cos(yaw), math.sin(yaw)
+  local x1 = x * c - z * s
+  local z1 = x * s + z * c
+  local cp, sp = math.cos(pitch), math.sin(pitch)
+  local y1 = y * cp - z1 * sp
+  local z2 = y * sp + z1 * cp
+  return x1, y1, z2
+end
+
+local DIST = 3.4
+local function proj(x, y, z)
+  local s = DIST / (DIST + z)
+  return 64 + x * s * 36, 30 + y * s * 22, z, s
+end
+
+-- wireframe 3d of the 4-op patch: cubes = operators, lines = FM matrix
+local function draw_patch3d(t)
+  local sounding = held_count() > 0
+  local yaw = t * (sounding and 1.15 or 0.45)
+  local pitch = 0.38 + 0.1 * math.sin(t * 0.35)
+  local segs = {}
+
+  local function addseg(x1, y1, z1, x2, y2, z2, lvl)
+    local X1, Y1, Z1 = proj(x1, y1, z1)
+    local X2, Y2, Z2 = proj(x2, y2, z2)
+    segs[#segs + 1] = {(Z1 + Z2) * 0.5, X1, Y1, X2, Y2, lvl}
+  end
+
+  local ctr = {}
+  for op = 1, OPS do
+    local hx, hy, hz = OP_HOME[op][1], OP_HOME[op][2], OP_HOME[op][3]
+    local out = util.clamp(params:get(pid(op, "out")), 0, 1)
+    local pulse = sounding and (1 + 0.08 * math.sin(t * 9 + op)) or 1
+    local sz = (0.16 + out * 0.22) * pulse
+    local cx, cy, cz = rot3(hx, hy, hz, yaw, pitch)
+    ctr[op] = {cx, cy, cz}
+    local near = util.clamp(math.floor(7 - cz * 3 + out * 4), 3, 15)
+    for e = 1, #CUBE_E do
+      local a = CUBE_V[CUBE_E[e][1]]
+      local b = CUBE_V[CUBE_E[e][2]]
+      local ax, ay, az = rot3(hx + a[1] * sz, hy + a[2] * sz, hz + a[3] * sz, yaw, pitch)
+      local bx, by, bz = rot3(hx + b[1] * sz, hy + b[2] * sz, hz + b[3] * sz, yaw, pitch)
+      addseg(ax, ay, az, bx, by, bz, near)
+    end
+  end
+
+  for from = 1, OPS do
+    for to = 1, OPS do
+      local amt = params:get(pid(from, "m" .. to))
+      if math.abs(amt) >= 0.02 then
+        local a, b = ctr[from], ctr[to]
+        local lvl = util.clamp(math.floor(4 + math.abs(amt) * 6), 4, 13)
+        if from == to then
+          -- self-feedback: small hoop around the cube
+          local r = 0.34
+          local nseg = 8
+          local px, py, pz
+          for i = 0, nseg do
+            local ang = (i / nseg) * 6.28318 + t * 2
+            local lx = a[1] + math.cos(ang) * r
+            local ly = a[2] + math.sin(ang) * r * 0.55
+            local lz = a[3]
+            if i > 0 then addseg(px, py, pz, lx, ly, lz, lvl) end
+            px, py, pz = lx, ly, lz
+          end
+        else
+          addseg(a[1], a[2], a[3], b[1], b[2], b[3], lvl)
+        end
+      end
+    end
+  end
+
+  table.sort(segs, function(a, b) return a[1] > b[1] end)
+  screen.line_width(1)
+  for i = 1, #segs do
+    local s = segs[i]
+    screen.level(s[6])
+    screen.move(s[2], s[3])
+    screen.line(s[4], s[5])
+    screen.stroke()
+  end
+
+  -- op numbers at projected centers, plus a spark riding each mod edge
+  for op = 1, OPS do
+    local X, Y = proj(ctr[op][1], ctr[op][2], ctr[op][3])
+    screen.level(sounding and 15 or 8)
+    screen.move(X - 2, Y + 3)
+    screen.text(tostring(op))
+  end
+  for from = 1, OPS do
+    for to = 1, OPS do
+      if from ~= to then
+        local amt = params:get(pid(from, "m" .. to))
+        if math.abs(amt) >= 0.02 then
+          local u = t * 0.7 + from * 0.19
+          u = u - math.floor(u)
+          local a, b = ctr[from], ctr[to]
+          local X, Y = proj(
+            a[1] + (b[1] - a[1]) * u,
+            a[2] + (b[2] - a[2]) * u,
+            a[3] + (b[3] - a[3]) * u)
+          screen.level(15)
+          screen.rect(X, Y, 2, 2)
+          screen.fill()
+        end
+      end
+    end
+  end
+end
+
 function redraw()
   if norns.menu.status() then return end
   screen.clear()
@@ -664,14 +800,15 @@ function redraw()
 
   local op = op_page()
   if page == 1 then
-    row(22, "preset", string.format("%.0f / %.0f", params:get("preset"), #factory), true)
-    row(32, "trans",
-      (params:get("transpose") > 0 and "+" or "") .. tostring(params:get("transpose")),
-      not k1)
-    row(42, "amp", fmt_num(params:get("amp"), 2), k1)
-    screen.level(4)
+    draw_patch3d(util.time())
+
+    local tr = params:get("transpose")
+    screen.level(k1 and 4 or 10)
     screen.move(0, 54)
-    screen.text("notes")
+    screen.text(string.format("P%.0f  T%s  A%s",
+      params:get("preset"),
+      (tr > 0 and "+" or "") .. tostring(tr),
+      fmt_num(params:get("amp"), 2)))
     screen.level(8)
     screen.move(128, 54)
     screen.text_right(held_names())
