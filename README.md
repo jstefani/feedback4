@@ -21,12 +21,15 @@ rsync -va --exclude .git --exclude pd . norns.local:~/dust/code/feedback4/
 |  |  |
 |---|---|
 | E1 | page: play / op1–4 / algo / macro |
-| **play** | E2 preset · E3 transpose · K1+E3 amp · K2 hold note · K3 panic |
-| **op** | E2 ratio · E3 out · K2+E A/D · K3+E S/R · K1+E pan / env amt |
+| **play** | E2 preset · E3 transpose · K1+E3 amp |
+| **op** | E2 ratio · E3 out · hold K2+E A/D · hold K3+E S/R · K1+E pan / env amt |
 | **algo** | E2 cell · E3 send amount (4×4 PM matrix) |
-| **macro** | K2 which · E2 dest · E3 scale · K3+E3 value |
+| **macro** | hold K2 which · E2 dest · E3 scale · hold K3+E3 value |
+| K2 tap | tweak — walk the current patch a little (algorithm stays) |
+| K3 tap | randomize — new sparse algorithm, ratios, envelopes |
+| panic | PARAMS → **all notes off** |
 
-PARAMS menu has every operator control plus **all notes off**.
+PARAMS also has **tweak patch** and **randomize patch** triggers.
 
 ## architecture (from the PD patch)
 

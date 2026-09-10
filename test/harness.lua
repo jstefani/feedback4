@@ -51,6 +51,7 @@ end}
 util = {
   clamp = function(n, a, b) return math.min(math.max(n, a), b) end,
   round = function(n, q) return math.floor(n / (q or 1) + 0.5) * (q or 1) end,
+  time = function() return 0 end,
 }
 screen = setmetatable({}, {__index = function() return function() end end})
 engine = setmetatable({}, {__index = function() return function() end end})
@@ -108,4 +109,12 @@ enc(1, -20)
 key(2, 1); key(2, 0)
 key(3, 1); key(3, 0)
 assert(pcall(redraw))
+
+-- generative: many draws so every randomize branch is hit
+for i = 1, 5000 do
+  key(3, 1); key(3, 0)
+  assert(pcall(redraw))
+  key(2, 1); key(2, 0)
+  assert(pcall(redraw))
+end
 print("PASS")

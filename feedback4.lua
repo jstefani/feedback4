@@ -7,14 +7,15 @@
 -- E1 page
 -- PLAY  E2 preset  E3 trans
 -- OP    E2 ratio   E3 out
---       K2+E  A/D
---       K3+E  S/R
+--       hold K2+E  A/D
+--       hold K3+E  S/R
 --       K1+E  pan / env amt
 -- ALGO  E2 cell    E3 amt
 -- MACRO E2 dest    E3 scale
---       K2 which
--- K2 play note (play page)
--- K3 all notes off
+--       hold K2 which
+-- K2 tweak (near current)
+-- K3 randomize patch
+-- panic: PARAMS all notes off
 -- midi in. PARAMS for rest.
 
 engine.name = "Feedback4"
@@ -33,15 +34,17 @@ local PNAMES = {
 
 local page = 1
 local k2, k3, k1 = false, false, false
+local k2_used, k3_used = false, false
 local algo_cell = 1 -- 1..16, row-major from->to
 local macro_i = 1
 local loading = false
 local applying_macro = false
+local hud = nil
+local hud_t = 0
 
 local active = {}
 local held = {}
 local next_id = 1
-local test_note = nil
 local screen_dirty = true
 
 local function pid(op, name)
@@ -177,8 +180,164 @@ local function all_off()
   engine.stopAll()
   active = {}
   held = {}
-  test_note = nil
   dirty()
+end
+
+local function flash(msg)
+  hud = msg
+  hud_t = util.time()
+  dirty()
+end
+
+local function pset(op, name, val)
+  local r = RANGES[name]
+  if name == "envsrc" then
+    val = math.floor(val + 0.5)
+  end
+  params:set(pid(op, name), util.clamp(val, r[1], r[2]))
+end
+
+-- simple harmonic ratios, weighted toward unison/octaves
+local RND_RATIOS = {
+  0.5, 1, 1, 1, 1, 1.5, 2, 2, 2, 3, 4, 4, 5, 6, 7, 8, 0.25, 12, 16
+}
+
+-- sparse 4-op skeletons. {from,to} edges + which ops reach the output
+local SKELS = {
+  { e = {{4, 3}, {3, 2}, {2, 1}}, c = {1} },
+  { e = {{3, 2}, {2, 1}, {4, 1}}, c = {1} },
+  { e = {{2, 1}, {4, 3}}, c = {1, 3} },
+  { e = {{4, 1}, {3, 1}, {2, 1}}, c = {1} },
+  { e = {{4, 3}, {3, 1}, {2, 1}}, c = {1} },
+  { e = {{4, 4}, {4, 3}, {3, 2}, {2, 1}}, c = {1} },
+  { e = {}, c = {1, 2, 3, 4} },
+  { e = {{4, 3}, {2, 1}}, c = {1, 3} },
+  { e = {{3, 1}, {4, 2}}, c = {1, 2} },
+  { e = {{4, 1}, {3, 2}, {2, 1}}, c = {1} },
+}
+
+local function pick(t)
+  return t[math.random(#t)]
+end
+
+local function rnd_ratio()
+  local r = math.random()
+  if r < 0.7 then
+    return pick(RND_RATIOS)
+  elseif r < 0.9 then
+    return 0.25 + math.random() * 8
+  end
+  local s = (math.random() < 0.5) and -1 or 1
+  return s * (0.5 + math.random() * 4)
+end
+
+-- slider domain 0-1 (later squared). skew low, often instant attack
+local function rnd_atk()
+  if math.random() < 0.45 then return 0 end
+  local x = math.random()
+  return x * x * 0.6
+end
+
+local function rnd_dec()
+  local x = math.random()
+  return 0.05 + x * x * 0.9
+end
+
+local function rnd_sus()
+  if math.random() < 0.15 then return 0 end
+  return 0.2 + math.random() * 0.8
+end
+
+local function rnd_rel()
+  local x = math.random()
+  return 0.04 + x * x * 0.5
+end
+
+local function rnd_mod()
+  if math.random() < 0.2 then return 0.04 + math.random() * 0.15 end
+  return 0.15 + math.random() * 1.4
+end
+
+local function is_carrier(skel, op)
+  for i = 1, #skel.c do
+    if skel.c[i] == op then return true end
+  end
+  return false
+end
+
+-- K3: new patch. sparse algorithm, simple ratios, playable envelopes.
+-- transpose / amp / macros left alone — those are performance controls.
+local function randomize()
+  local skel = pick(SKELS)
+  for op = 1, OPS do
+    for d = 1, 4 do pset(op, "m" .. d, 0) end
+  end
+  for i = 1, #skel.e do
+    local from, to = skel.e[i][1], skel.e[i][2]
+    local amt = rnd_mod()
+    if from == to then amt = 0.05 + math.random() * 0.35 end
+    pset(from, "m" .. to, amt)
+  end
+  -- occasional extra send, still sparse
+  if math.random() < 0.25 then
+    local from, to = math.random(OPS), math.random(OPS)
+    if math.abs(params:get(pid(from, "m" .. to))) < 1e-6 then
+      pset(from, "m" .. to, 0.05 + math.random() * 0.4)
+    end
+  end
+
+  for op = 1, OPS do
+    pset(op, "atk", rnd_atk())
+    pset(op, "dec", rnd_dec())
+    pset(op, "sus", rnd_sus())
+    pset(op, "rel", rnd_rel())
+    pset(op, "ratio", rnd_ratio())
+    if is_carrier(skel, op) then
+      pset(op, "out", 0.45 + math.random() * 0.55)
+    else
+      pset(op, "out", (math.random() < 0.7) and 0 or (math.random() * 0.35))
+    end
+    pset(op, "pan", 0.35 + math.random() * 0.3)
+    if math.random() < 0.2 then
+      pset(op, "envsrc", math.random(0, 4))
+      pset(op, "envamt", (math.random() * 0.8) * ((math.random() < 0.5) and 1 or -1))
+    else
+      pset(op, "envsrc", 0)
+      pset(op, "envamt", 0)
+    end
+  end
+  flash("RND")
+end
+
+-- K2: walk the current patch a little. zeros in the matrix stay zero so
+-- the algorithm does not fill in. env src stays put.
+local function morph()
+  local function nudge(op, name, abs_amt, rel_amt)
+    local cur = params:get(pid(op, name))
+    local delta = (math.random() * 2 - 1) * abs_amt
+    if rel_amt and rel_amt > 0 then
+      delta = delta + cur * (math.random() * 2 - 1) * rel_amt
+    end
+    pset(op, name, cur + delta)
+  end
+  for op = 1, OPS do
+    nudge(op, "atk", 0.05, 0.12)
+    nudge(op, "dec", 0.06, 0.1)
+    nudge(op, "sus", 0.06, 0.08)
+    nudge(op, "rel", 0.05, 0.1)
+    nudge(op, "ratio", 0.08, 0.06)
+    nudge(op, "out", 0.06, 0.08)
+    nudge(op, "pan", 0.04, 0)
+    nudge(op, "envamt", 0.12, 0.1)
+    for d = 1, 4 do
+      local id = pid(op, "m" .. d)
+      local cur = params:get(id)
+      if math.abs(cur) >= 0.001 then
+        nudge(op, "m" .. d, 0.08, 0.12)
+      end
+    end
+  end
+  flash("TWEAK")
 end
 
 local function load_factory(idx)
@@ -284,6 +443,15 @@ function init()
   params:add_trigger("all_notes_off", "all notes off")
   params:set_action("all_notes_off", function() all_off() end)
 
+  params:add_trigger("tweak", "tweak patch")
+  params:set_action("tweak", function()
+    if not loading then morph() end
+  end)
+  params:add_trigger("randomize", "randomize patch")
+  params:set_action("randomize", function()
+    if not loading then randomize() end
+  end)
+
   params:add_number("midi_channel", "midi channel", 0, 16, 0, function(p)
     return p:get() == 0 and "all" or tostring(p:get())
   end)
@@ -356,6 +524,8 @@ local function op_page()
 end
 
 function enc(n, d)
+  if k2 then k2_used = true end
+  if k3 then k3_used = true end
   if n == 1 then
     page = util.clamp(page + d, 1, #PAGES)
     dirty()
@@ -418,20 +588,21 @@ function key(n, z)
   if n == 1 then
     k1 = z == 1
   elseif n == 2 then
-    k2 = z == 1
-    if page == 1 then
-      if z == 1 then
-        local note = 60
-        test_note = note
-        note_on(note, 0.85)
-      elseif test_note then
-        note_off(test_note)
-        test_note = nil
-      end
+    if z == 1 then
+      k2 = true
+      k2_used = false
+    else
+      k2 = false
+      if not k2_used then morph() end
     end
   elseif n == 3 then
-    k3 = z == 1
-    if z == 1 and (page == 1 or k1) then all_off() end
+    if z == 1 then
+      k3 = true
+      k3_used = false
+    else
+      k3 = false
+      if not k3_used then randomize() end
+    end
   end
   dirty()
 end
@@ -484,7 +655,12 @@ function redraw()
   screen.text("feedback4")
   screen.level(5)
   screen.move(128, 8)
-  screen.text_right(PAGES[page])
+  if hud and (util.time() - hud_t) < 0.8 then
+    screen.level(15)
+    screen.text_right(hud)
+  else
+    screen.text_right(PAGES[page])
+  end
 
   local op = op_page()
   if page == 1 then
@@ -501,7 +677,7 @@ function redraw()
     screen.text_right(held_names())
     screen.level(3)
     screen.move(0, 63)
-    screen.text("K2 note  K3 panic")
+    screen.text("K2 tweak  K3 rnd")
   elseif op then
     local focus
     if k1 then focus = "pan/env"
