@@ -644,10 +644,16 @@ local function env_bar(x, y, w, h, v)
   end
 end
 
-local function held_count()
-  local n = 0
-  for _ in pairs(held) do n = n + 1 end
-  return n
+local function held_stats()
+  local n, sum, lo, hi = 0, 0, 127, 0
+  for note, _ in pairs(held) do
+    n = n + 1
+    sum = sum + note
+    if note < lo then lo = note end
+    if note > hi then hi = note end
+  end
+  if n == 0 then return 0, 60, 0 end
+  return n, sum / n, hi - lo
 end
 
 -- unit cube
@@ -668,14 +674,16 @@ local OP_HOME = {
   { 0.95, -0.55, -0.7},
 }
 
-local function rot3(x, y, z, yaw, pitch)
+local function rot3(x, y, z, yaw, pitch, roll)
   local c, s = math.cos(yaw), math.sin(yaw)
   local x1 = x * c - z * s
   local z1 = x * s + z * c
   local cp, sp = math.cos(pitch), math.sin(pitch)
   local y1 = y * cp - z1 * sp
   local z2 = y * sp + z1 * cp
-  return x1, y1, z2
+  roll = roll or 0
+  local cr, sr = math.cos(roll), math.sin(roll)
+  return x1 * cr - y1 * sr, x1 * sr + y1 * cr, z2
 end
 
 local DIST = 3.4
@@ -685,10 +693,24 @@ local function proj(x, y, z)
 end
 
 -- wireframe 3d of the 4-op patch: cubes = operators, lines = FM matrix
+-- held MIDI notes steer the camera: low keys reverse and tilt up,
+-- high keys spin the other way and look down; chord span adds roll.
 local function draw_patch3d(t)
-  local sounding = held_count() > 0
-  local yaw = t * (sounding and 1.15 or 0.45)
-  local pitch = 0.38 + 0.1 * math.sin(t * 0.35)
+  local nheld, mean, span = held_stats()
+  local sounding = nheld > 0
+  local nrm = util.clamp((mean - 60) / 24, -1.5, 1.5)
+  local span_n = util.clamp(span / 24, 0, 2)
+  local yaw, pitch, roll
+  if sounding then
+    local dir = (nrm >= 0) and 1 or -1
+    yaw = t * dir * (0.5 + math.abs(nrm) * 1.15)
+    pitch = 0.28 - nrm * 0.55 + 0.06 * math.sin(t * 0.4)
+    roll = nrm * 0.65 + span_n * 0.28 * math.sin(t * 1.3)
+  else
+    yaw = t * 0.45
+    pitch = 0.38 + 0.1 * math.sin(t * 0.35)
+    roll = 0.07 * math.sin(t * 0.22)
+  end
   local segs = {}
 
   local function addseg(x1, y1, z1, x2, y2, z2, lvl)
@@ -701,16 +723,16 @@ local function draw_patch3d(t)
   for op = 1, OPS do
     local hx, hy, hz = OP_HOME[op][1], OP_HOME[op][2], OP_HOME[op][3]
     local out = util.clamp(params:get(pid(op, "out")), 0, 1)
-    local pulse = sounding and (1 + 0.08 * math.sin(t * 9 + op)) or 1
+    local pulse = sounding and (1 + 0.08 * math.sin(t * (7 + math.abs(nrm) * 6) + op)) or 1
     local sz = (0.16 + out * 0.22) * pulse
-    local cx, cy, cz = rot3(hx, hy, hz, yaw, pitch)
+    local cx, cy, cz = rot3(hx, hy, hz, yaw, pitch, roll)
     ctr[op] = {cx, cy, cz}
     local near = util.clamp(math.floor(7 - cz * 3 + out * 4), 3, 15)
     for e = 1, #CUBE_E do
       local a = CUBE_V[CUBE_E[e][1]]
       local b = CUBE_V[CUBE_E[e][2]]
-      local ax, ay, az = rot3(hx + a[1] * sz, hy + a[2] * sz, hz + a[3] * sz, yaw, pitch)
-      local bx, by, bz = rot3(hx + b[1] * sz, hy + b[2] * sz, hz + b[3] * sz, yaw, pitch)
+      local ax, ay, az = rot3(hx + a[1] * sz, hy + a[2] * sz, hz + a[3] * sz, yaw, pitch, roll)
+      local bx, by, bz = rot3(hx + b[1] * sz, hy + b[2] * sz, hz + b[3] * sz, yaw, pitch, roll)
       addseg(ax, ay, az, bx, by, bz, near)
     end
   end
