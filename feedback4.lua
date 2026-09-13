@@ -16,7 +16,8 @@
 -- K2 tweak (near current)
 -- K3 randomize patch
 -- panic: PARAMS all notes off
--- midi in. PARAMS for rest.
+-- midi in. pitchbend + mod wheel.
+-- PARAMS for rest.
 
 engine.name = "Feedback4"
 
@@ -46,6 +47,7 @@ local active = {}
 local held = {}
 local next_id = 1
 local screen_dirty = true
+local bend = 0 -- -1..1 from MIDI pitchbend
 
 local function pid(op, name)
   return string.format("op%d_%s", op, name)
@@ -156,14 +158,28 @@ local function apply_macro(i)
   applying_macro = false
 end
 
+local function bend_st()
+  if bend >= 0 then return bend * params:get("bend_up") end
+  return bend * params:get("bend_down")
+end
+
+local function note_hz(note)
+  return MusicUtil.note_num_to_freq(note + params:get("transpose") + bend_st())
+end
+
+local function retune()
+  for note, id in pairs(active) do
+    engine.freq(id, note_hz(note))
+  end
+end
+
 local function note_on(note, vel)
   local id = next_id
   next_id = next_id + 1
   if active[note] then engine.noteKill(active[note]) end
   active[note] = id
   held[note] = true
-  local hz = MusicUtil.note_num_to_freq(note + params:get("transpose"))
-  engine.noteOn(id, hz, vel or 0.85)
+  engine.noteOn(id, note_hz(note), vel or 0.85)
   dirty()
 end
 
@@ -432,6 +448,10 @@ function init()
   end)
 
   params:add_number("transpose", "transpose", -24, 24, 0)
+  params:set_action("transpose", function()
+    retune()
+    dirty()
+  end)
 
   params:add_control("amp", "amp",
     controlspec.new(0, 1, "lin", 0, 0.7, ""))
@@ -454,6 +474,22 @@ function init()
 
   params:add_number("midi_channel", "midi channel", 0, 16, 0, function(p)
     return p:get() == 0 and "all" or tostring(p:get())
+  end)
+
+  params:add_number("bend_up", "bend up", 0, 24, 2, function(p)
+    return string.format("%.0f st", p:get())
+  end)
+  params:set_action("bend_up", function() retune() end)
+  params:add_number("bend_down", "bend down", 0, 24, 2, function(p)
+    return string.format("%.0f st", p:get())
+  end)
+  params:set_action("bend_down", function() retune() end)
+
+  params:add_control("mod", "mod wheel",
+    controlspec.new(0, 1, "lin", 0, 0, ""))
+  params:set_action("mod", function(x)
+    engine.fmMod(x)
+    dirty()
   end)
 
   for op = 1, OPS do add_op_params(op) end
@@ -480,6 +516,7 @@ function init()
   loading = false
   load_factory(params:get("preset"))
   engine.amp(params:get("amp"))
+  engine.fmMod(params:get("mod"))
 
   local function midi_event(data)
     local msg = midi.to_msg(data)
@@ -494,6 +531,11 @@ function init()
     elseif msg.type == "note_off"
         or (msg.type == "note_on" and msg.vel == 0) then
       note_off(msg.note)
+    elseif msg.type == "pitchbend" then
+      bend = util.clamp((msg.val - 8192) / 8192, -1, 1)
+      retune()
+    elseif msg.type == "cc" and msg.cc == 1 then
+      params:set("mod", msg.val / 127)
     elseif msg.type == "cc" and msg.cc == 123 then
       all_off()
     end
@@ -695,7 +737,19 @@ end
 -- wireframe 3d of the 4-op patch: cubes = operators, lines = FM matrix
 -- held MIDI notes steer the camera: low keys reverse and tilt up,
 -- high keys spin the other way and look down; chord span adds roll.
+-- mod wheel lifts the drawing and fades it out (gone at 1).
 local function draw_patch3d(t)
+  local fade = 1 - util.clamp(params:get("mod"), 0, 1)
+  if fade < 0.02 then return end
+  local lift = (1 - fade) * 48
+  local function p3(x, y, z)
+    local X, Y, Z = proj(x, y, z)
+    return X, Y - lift, Z
+  end
+  local function dim(lvl)
+    return math.max(1, math.floor(lvl * fade + 0.5))
+  end
+
   local nheld, mean, span = held_stats()
   local sounding = nheld > 0
   local nrm = util.clamp((mean - 60) / 24, -1.5, 1.5)
@@ -714,9 +768,9 @@ local function draw_patch3d(t)
   local segs = {}
 
   local function addseg(x1, y1, z1, x2, y2, z2, lvl)
-    local X1, Y1, Z1 = proj(x1, y1, z1)
-    local X2, Y2, Z2 = proj(x2, y2, z2)
-    segs[#segs + 1] = {(Z1 + Z2) * 0.5, X1, Y1, X2, Y2, lvl}
+    local X1, Y1, Z1 = p3(x1, y1, z1)
+    local X2, Y2, Z2 = p3(x2, y2, z2)
+    segs[#segs + 1] = {(Z1 + Z2) * 0.5, X1, Y1, X2, Y2, dim(lvl)}
   end
 
   local ctr = {}
@@ -775,8 +829,8 @@ local function draw_patch3d(t)
 
   -- op numbers at projected centers, plus a spark riding each mod edge
   for op = 1, OPS do
-    local X, Y = proj(ctr[op][1], ctr[op][2], ctr[op][3])
-    screen.level(sounding and 15 or 8)
+    local X, Y = p3(ctr[op][1], ctr[op][2], ctr[op][3])
+    screen.level(dim(sounding and 15 or 8))
     screen.move(X - 2, Y + 3)
     screen.text(tostring(op))
   end
@@ -788,11 +842,11 @@ local function draw_patch3d(t)
           local u = t * 0.7 + from * 0.19
           u = u - math.floor(u)
           local a, b = ctr[from], ctr[to]
-          local X, Y = proj(
+          local X, Y = p3(
             a[1] + (b[1] - a[1]) * u,
             a[2] + (b[2] - a[2]) * u,
             a[3] + (b[3] - a[3]) * u)
-          screen.level(15)
+          screen.level(dim(15))
           screen.rect(X, Y, 2, 2)
           screen.fill()
         end

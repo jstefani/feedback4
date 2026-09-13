@@ -16,6 +16,8 @@ Engine_Feedback4 : CroneEngine {
 	var <atk, <dec, <sus, <rel;
 	var <rat, <lvl, <src, <amt, <pan;
 	var <mat; // 4x4 row-major: from * 4 + to
+	var fmScale = 1.0;
+	var fbAdd = 0.0;
 
 	*new { arg context, doneCallback;
 		^super.new(context, doneCallback);
@@ -50,10 +52,16 @@ Engine_Feedback4 : CroneEngine {
 				x11 = 0, x12 = 0, x13 = 0, x14 = 0,
 				x21 = 0, x22 = 0, x23 = 0, x24 = 0,
 				x31 = 0, x32 = 0, x33 = 0, x34 = 0,
-				x41 = 0, x42 = 0, x43 = 0, x44 = 0;
+				x41 = 0, x42 = 0, x43 = 0, x44 = 0,
+				fmScale = 1, fbAdd = 0;
 
 			var atks, decs, suss, rels, rats, lvls, srcs, amts, pans, matrix;
 			var envs, prev, ops, mixL, mixR, relMax, kill, life, envPeak;
+			var fs, fb, frq;
+
+			frq = Lag.kr(freq, 0.03);
+			fs = Lag.kr(fmScale, 0.08);
+			fb = Lag.kr(fbAdd, 0.08);
 
 			atks = [atk1, atk2, atk3, atk4].collect({ arg x; Lag.kr(x, 0.02).max(0) });
 			decs = [dec1, dec2, dec3, dec4].collect({ arg x; Lag.kr(x, 0.02).max(0) });
@@ -85,8 +93,12 @@ Engine_Feedback4 : CroneEngine {
 			ops = 4.collect({ arg i;
 				var eMod = Select.ar(srcs[i].round.clip(0, 4), [DC.ar(0)] ++ envs);
 				var ratio = rats[i] + (eMod * amts[i]);
-				var f = (freq * ratio).clip(-20000, 20000);
-				var pm = Mix.fill(4, { arg j; prev[j] * matrix[j][i] });
+				var f = (frq * ratio).clip(-20000, 20000);
+				var pm = Mix.fill(4, { arg j;
+					var extra = 0;
+					if (j == i) { extra = fb };
+					prev[j] * (matrix[j][i] * fs + extra)
+				});
 				// fmMOD.pd: cos~(phasor~ + pm). SinOsc phase is radians.
 				SinOsc.ar(f, pm * 2pi) * envs[i];
 			});
@@ -156,6 +168,19 @@ Engine_Feedback4 : CroneEngine {
 			pg.set(\amp, amp);
 		});
 
+		this.addCommand(\freq, "if", { arg msg;
+			var id = msg[1], hz = msg[2];
+			if (voices[id].notNil, { voices[id].set(\freq, hz); });
+		});
+
+		// 0 = patch as written; 1 = 4x FM depth + self-feedback on every op
+		this.addCommand(\fmMod, "f", { arg msg;
+			var w = msg[1].clip(0, 1);
+			fmScale = 1 + (w * 3);
+			fbAdd = w * 0.5;
+			pg.set(\fmScale, fmScale, \fbAdd, fbAdd);
+		});
+
 		// op n, atk, dec, sus, rel, m1, m2, m3, m4, ratio, out, envsrc, envamt, pan
 		// times in seconds, out already squared, envsrc 0..4
 		this.addCommand(\op, "ifffffffffffff", { arg msg;
@@ -179,7 +204,7 @@ Engine_Feedback4 : CroneEngine {
 	}
 
 	voiceArgs {
-		var pairs = [\amp, amp];
+		var pairs = [\amp, amp, \fmScale, fmScale, \fbAdd, fbAdd];
 		4.do({ arg i;
 			var n = i + 1;
 			pairs = pairs ++ [

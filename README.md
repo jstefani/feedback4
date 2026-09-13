@@ -28,6 +28,8 @@ rsync -va --exclude .git --exclude pd . norns.local:~/dust/code/feedback4/
 | K2 tap | tweak — walk the current patch a little (algorithm stays) |
 | K3 tap | randomize — new sparse algorithm, ratios, envelopes |
 | panic | PARAMS → **all notes off** |
+| pitchbend | live retune; **bend up** / **bend down** in PARAMS (semitones) |
+| mod wheel | overdrives FM depth + adds self-feedback; play graphic lifts and fades out |
 
 PARAMS also has **tweak patch** and **randomize patch** triggers.
 
