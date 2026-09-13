@@ -5,6 +5,10 @@ function P:add_group() end
 function P:add_trigger(id)
   self.v[id] = 0
 end
+function P:add_option(id, _, opts, d)
+  self.v[id] = d or 1
+  self.spec[id] = {1, #opts}
+end
 function P:add_number(id, _, mn, mx, d)
   self.v[id] = d or mn
   self.spec[id] = {mn, mx}
@@ -122,7 +126,15 @@ key(3, 1); key(3, 0)
 assert(pcall(redraw))
 
 -- generative: many draws so every randomize branch is hit
-for i = 1, 5000 do
+params:set("musical", 2)
+for i = 1, 2500 do
+  key(3, 1); key(3, 0)
+  assert(pcall(redraw))
+  key(2, 1); key(2, 0)
+  assert(pcall(redraw))
+end
+params:set("musical", 1)
+for i = 1, 2500 do
   key(3, 1); key(3, 0)
   assert(pcall(redraw))
   key(2, 1); key(2, 0)

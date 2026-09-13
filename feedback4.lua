@@ -213,10 +213,42 @@ local function pset(op, name, val)
   params:set(pid(op, name), util.clamp(val, r[1], r[2]))
 end
 
--- simple harmonic ratios, weighted toward unison/octaves
+-- harmonic ratio table (DX-style integers and simple rationals).
+-- carriers stay near 1/2/4 so stacked outs don't beat; modulators roam the table.
+local HARMONIC = {
+  0.25, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 10, 12, 16
+}
+local CARRIER_R = { 0.5, 1, 1, 1, 1, 2, 2, 3, 4 }
+local MOD_R = { 0.5, 1, 1, 1.5, 2, 2, 3, 3, 4, 5, 6, 7, 8 }
+-- wild-mode weighted bag (duplicates = more likely)
 local RND_RATIOS = {
   0.5, 1, 1, 1, 1, 1.5, 2, 2, 2, 3, 4, 4, 5, 6, 7, 8, 0.25, 12, 16
 }
+
+local function musical()
+  return params:get("musical") == 2
+end
+
+local function nearest_harmonic(x)
+  local ax = math.abs(x)
+  local best, bd = HARMONIC[1], math.huge
+  for i = 1, #HARMONIC do
+    local d = math.abs(HARMONIC[i] - ax)
+    if d < bd then best, bd = HARMONIC[i], d end
+  end
+  return best
+end
+
+local function neighbor_harmonic(x)
+  local ax = math.abs(x)
+  local idx, bd = 1, math.huge
+  for i = 1, #HARMONIC do
+    local d = math.abs(HARMONIC[i] - ax)
+    if d < bd then idx, bd = i, d end
+  end
+  idx = util.clamp(idx + (math.random(3) - 2), 1, #HARMONIC)
+  return HARMONIC[idx]
+end
 
 -- sparse 4-op skeletons. {from,to} edges + which ops reach the output
 local SKELS = {
@@ -236,7 +268,11 @@ local function pick(t)
   return t[math.random(#t)]
 end
 
-local function rnd_ratio()
+local function rnd_ratio(carrier)
+  if musical() then
+    if carrier then return pick(CARRIER_R) end
+    return pick(MOD_R)
+  end
   local r = math.random()
   if r < 0.7 then
     return pick(RND_RATIOS)
@@ -307,19 +343,20 @@ local function randomize()
     pset(op, "dec", rnd_dec())
     pset(op, "sus", rnd_sus())
     pset(op, "rel", rnd_rel())
-    pset(op, "ratio", rnd_ratio())
+    pset(op, "ratio", rnd_ratio(is_carrier(skel, op)))
     if is_carrier(skel, op) then
       pset(op, "out", 0.45 + math.random() * 0.55)
     else
       pset(op, "out", (math.random() < 0.7) and 0 or (math.random() * 0.35))
     end
     pset(op, "pan", 0.35 + math.random() * 0.3)
-    if math.random() < 0.2 then
-      pset(op, "envsrc", math.random(0, 4))
-      pset(op, "envamt", (math.random() * 0.8) * ((math.random() < 0.5) and 1 or -1))
-    else
+    -- ratio env sweeps the fundamental off the harmonic series
+    if musical() or math.random() >= 0.2 then
       pset(op, "envsrc", 0)
       pset(op, "envamt", 0)
+    else
+      pset(op, "envsrc", math.random(0, 4))
+      pset(op, "envamt", (math.random() * 0.8) * ((math.random() < 0.5) and 1 or -1))
     end
   end
   flash("RND")
@@ -341,10 +378,14 @@ local function morph()
     nudge(op, "dec", 0.06, 0.1)
     nudge(op, "sus", 0.06, 0.08)
     nudge(op, "rel", 0.05, 0.1)
-    nudge(op, "ratio", 0.08, 0.06)
+    if musical() then
+      pset(op, "ratio", neighbor_harmonic(params:get(pid(op, "ratio"))))
+    else
+      nudge(op, "ratio", 0.08, 0.06)
+      nudge(op, "envamt", 0.12, 0.1)
+    end
     nudge(op, "out", 0.06, 0.08)
     nudge(op, "pan", 0.04, 0)
-    nudge(op, "envamt", 0.12, 0.1)
     for d = 1, 4 do
       local id = pid(op, "m" .. d)
       local cur = params:get(id)
@@ -470,6 +511,16 @@ function init()
   params:add_trigger("randomize", "randomize patch")
   params:set_action("randomize", function()
     if not loading then randomize() end
+  end)
+
+  params:add_option("musical", "musical fm", {"off", "on"}, 2)
+  params:set_action("musical", function(x)
+    if x == 2 and not loading then
+      for op = 1, OPS do
+        pset(op, "ratio", nearest_harmonic(params:get(pid(op, "ratio"))))
+      end
+    end
+    dirty()
   end)
 
   params:add_number("midi_channel", "midi channel", 0, 16, 0, function(p)

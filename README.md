@@ -33,6 +33,11 @@ rsync -va --exclude .git --exclude pd . norns.local:~/dust/code/feedback4/
 
 PARAMS also has **tweak patch** and **randomize patch** triggers.
 
+**musical fm** (PARAMS, default on): K3 randomize / K2 tweak pick harmonic
+ratios (integers and simple rationals). Carriers stay near 1/2/4 so stacked
+outs don't beat. Ratio envelopes stay off. Turning it on snaps current
+ratios to the table. Off restores inharmonic / negative ratios.
+
 ## architecture (from the PD patch)
 
 Each operator is a phase-mod oscillator (`phasor~` + `cos~`). The 4×4
