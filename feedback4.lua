@@ -737,15 +737,10 @@ end
 -- wireframe 3d of the 4-op patch: cubes = operators, lines = FM matrix
 -- held MIDI notes steer the camera: low keys reverse and tilt up,
 -- high keys spin the other way and look down; chord span adds roll.
--- mod wheel lifts the drawing and fades it out (gone at 1).
+-- mod wheel fades the drawing in place (gone at 1).
 local function draw_patch3d(t)
   local fade = 1 - util.clamp(params:get("mod"), 0, 1)
   if fade < 0.02 then return end
-  local lift = (1 - fade) * 48
-  local function p3(x, y, z)
-    local X, Y, Z = proj(x, y, z)
-    return X, Y - lift, Z
-  end
   local function dim(lvl)
     return math.max(1, math.floor(lvl * fade + 0.5))
   end
@@ -768,8 +763,8 @@ local function draw_patch3d(t)
   local segs = {}
 
   local function addseg(x1, y1, z1, x2, y2, z2, lvl)
-    local X1, Y1, Z1 = p3(x1, y1, z1)
-    local X2, Y2, Z2 = p3(x2, y2, z2)
+    local X1, Y1, Z1 = proj(x1, y1, z1)
+    local X2, Y2, Z2 = proj(x2, y2, z2)
     segs[#segs + 1] = {(Z1 + Z2) * 0.5, X1, Y1, X2, Y2, dim(lvl)}
   end
 
@@ -829,7 +824,7 @@ local function draw_patch3d(t)
 
   -- op numbers at projected centers, plus a spark riding each mod edge
   for op = 1, OPS do
-    local X, Y = p3(ctr[op][1], ctr[op][2], ctr[op][3])
+    local X, Y = proj(ctr[op][1], ctr[op][2], ctr[op][3])
     screen.level(dim(sounding and 15 or 8))
     screen.move(X - 2, Y + 3)
     screen.text(tostring(op))
@@ -842,7 +837,7 @@ local function draw_patch3d(t)
           local u = t * 0.7 + from * 0.19
           u = u - math.floor(u)
           local a, b = ctr[from], ctr[to]
-          local X, Y = p3(
+          local X, Y = proj(
             a[1] + (b[1] - a[1]) * u,
             a[2] + (b[2] - a[2]) * u,
             a[3] + (b[3] - a[3]) * u)
