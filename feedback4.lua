@@ -986,9 +986,6 @@ function redraw()
   screen.font_face(1)
   screen.font_size(8)
 
-  screen.level(15)
-  screen.move(0, 8)
-  screen.text("feedback4")
   screen.level(5)
   screen.move(128, 8)
   if hud and (util.time() - hud_t) < 0.8 then
@@ -1009,12 +1006,9 @@ function redraw()
       params:get("preset"),
       (tr > 0 and "+" or "") .. tostring(tr),
       fmt_num(params:get("amp"), 2)))
-    screen.level(8)
-    screen.move(128, 54)
-    screen.text_right(held_names())
-    screen.level(3)
-    screen.move(0, 63)
-    screen.text("K2 tweak  K3 rnd")
+    -- screen.level(8)
+    -- screen.move(128, 54)
+    -- screen.text_right(held_names())
   elseif PAGES[page] == "env" then
     local ops = audible_ops()
     local names = {}
