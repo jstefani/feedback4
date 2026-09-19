@@ -20,13 +20,14 @@ rsync -va --exclude .git --exclude pd . norns.local:~/dust/code/feedback4/
 
 |  |  |
 |---|---|
-| E1 | page: play / op1–4 / algo / macro |
+| E1 | page: play / env / op1–4 / algo / macro |
 | **play** | E2 preset · E3 transpose · K1+E3 amp · rotating wireframe of the 4-op patch |
+| **env** | amp envelope of every audible op (out > 0) · E2 attack · E3 decay + release · K2 tap random envelopes · K3 tap step shapes (perc, pluck, stab, gate, sustain, pad, swell, long rel) |
 | **op** | E2 ratio · E3 out · hold K2+E A/D · hold K3+E S/R · K1+E pan / env amt |
 | **algo** | E2 cell · E3 send amount (4×4 PM matrix) |
 | **macro** | hold K2 which · E2 dest · E3 scale · hold K3+E3 value |
-| K2 tap | tweak — walk the current patch a little (algorithm stays) |
-| K3 tap | randomize — new sparse algorithm, ratios, envelopes |
+| K2 tap | tweak — walk the current patch a little (algorithm stays). on **env** page: random envelopes |
+| K3 tap | randomize — new sparse algorithm, ratios, envelopes. on **env** page: next shape |
 | panic | PARAMS → **all notes off** |
 | pitchbend | live retune; **bend up** / **bend down** in PARAMS (semitones) |
 | mod wheel | overdrives FM depth + adds self-feedback; play graphic fades out in place |

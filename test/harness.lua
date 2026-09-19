@@ -105,7 +105,7 @@ for i = 1, 25 do
 end
 
 -- walk pages with E1, then drive keys/encs on each
-for _ = 1, 7 do
+for _ = 1, 8 do
   for _ = 1, 20 do
     key(2, 1); key(2, 0)
     key(3, 1); key(3, 0)
@@ -124,6 +124,20 @@ enc(1, -20)
 key(2, 1); key(2, 0)
 key(3, 1); key(3, 0)
 assert(pcall(redraw))
+
+-- env page: shapes cycle, random envs, encs, and the no-audible-op fallback
+enc(1, 1)
+for i = 1, 4 do params:set("op" .. i .. "_out", 0) end
+for _ = 1, 20 do
+  key(3, 1); key(3, 0)
+  key(2, 1); key(2, 0)
+  enc(2, 3); enc(3, -3)
+  assert(pcall(redraw))
+end
+for _ = 1, 60 do enc(2, 1); enc(3, 1) end
+for _ = 1, 60 do enc(2, -1); enc(3, -1) end
+assert(pcall(redraw))
+enc(1, -1)
 
 -- generative: many draws so every randomize branch is hit
 params:set("musical", 2)

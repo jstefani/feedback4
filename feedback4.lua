@@ -6,6 +6,8 @@
 --
 -- E1 page
 -- PLAY  E2 preset  E3 trans
+-- ENV   E2 atk     E3 dec+rel
+--       K2 rnd env K3 shape
 -- OP    E2 ratio   E3 out
 --       hold K2+E  A/D
 --       hold K3+E  S/R
@@ -25,7 +27,7 @@ local MusicUtil = require "musicutil"
 local factory = include "lib/presets"
 
 local OPS = 4
-local PAGES = { "play", "op1", "op2", "op3", "op4", "algo", "macro" }
+local PAGES = { "play", "env", "op1", "op2", "op3", "op4", "algo", "macro" }
 local ENVSRC = { "off", "op1", "op2", "op3", "op4" }
 local PNAMES = {
   "atk", "dec", "sus", "rel",
@@ -38,6 +40,7 @@ local k2, k3, k1 = false, false, false
 local k2_used, k3_used = false, false
 local algo_cell = 1 -- 1..16, row-major from->to
 local macro_i = 1
+local shape_i = 0 -- env page: last shape applied, 0 = none
 local loading = false
 local applying_macro = false
 local hud = nil
@@ -397,6 +400,69 @@ local function morph()
   flash("TWEAK")
 end
 
+-- env page: ops that reach the output. falls back to all if none do.
+local function audible_ops()
+  local t = {}
+  for op = 1, OPS do
+    if params:get(pid(op, "out")) > 0.001 then t[#t + 1] = op end
+  end
+  if #t == 0 then
+    for op = 1, OPS do t[op] = op end
+  end
+  return t
+end
+
+-- slider domain 0-1 (squared later, see atk_sec etc)
+local SHAPES = {
+  { n = "perc",     atk = 0,    dec = 0.35, sus = 0,    rel = 0.15 },
+  { n = "pluck",    atk = 0,    dec = 0.6,  sus = 0.25, rel = 0.3 },
+  { n = "stab",     atk = 0,    dec = 0.3,  sus = 0.6,  rel = 0.1 },
+  { n = "gate",     atk = 0.05, dec = 0,    sus = 1,    rel = 0.08 },
+  { n = "sustain",  atk = 0.15, dec = 0.4,  sus = 0.85, rel = 0.3 },
+  { n = "pad",      atk = 0.7,  dec = 0.5,  sus = 0.8,  rel = 0.6 },
+  { n = "swell",    atk = 1,    dec = 0.3,  sus = 1,    rel = 0.5 },
+  { n = "long rel", atk = 0,    dec = 0.5,  sus = 0.5,  rel = 1 },
+}
+
+local function env_nudge(name, d)
+  for _, op in ipairs(audible_ops()) do
+    pset(op, name, params:get(pid(op, name)) + d)
+  end
+end
+
+-- K2 on env page
+local function env_random()
+  for _, op in ipairs(audible_ops()) do
+    pset(op, "atk", rnd_atk())
+    pset(op, "dec", rnd_dec())
+    pset(op, "sus", rnd_sus())
+    pset(op, "rel", rnd_rel())
+  end
+  shape_i = 0
+  flash("RND ENV")
+end
+
+-- K3 on env page
+local function env_next_shape()
+  shape_i = (shape_i % #SHAPES) + 1
+  local sh = SHAPES[shape_i]
+  for _, op in ipairs(audible_ops()) do
+    pset(op, "atk", sh.atk)
+    pset(op, "dec", sh.dec)
+    pset(op, "sus", sh.sus)
+    pset(op, "rel", sh.rel)
+  end
+  flash(sh.n)
+end
+
+-- mean of a slider across the audible ops, for the env page display
+local function env_mean(name)
+  local ops = audible_ops()
+  local sum = 0
+  for _, op in ipairs(ops) do sum = sum + params:get(pid(op, name)) end
+  return sum / #ops
+end
+
 local function load_factory(idx)
   local p = factory[idx]
   if p == nil then return end
@@ -613,7 +679,7 @@ function cleanup()
 end
 
 local function op_page()
-  if page >= 2 and page <= 5 then return page - 1 end
+  if page >= 3 and page <= 6 then return page - 2 end
   return nil
 end
 
@@ -637,6 +703,14 @@ function enc(n, d)
         params:delta("transpose", d)
       end
     end
+  elseif PAGES[page] == "env" then
+    if n == 2 then
+      env_nudge("atk", d * 0.02)
+    else
+      env_nudge("dec", d * 0.02)
+      env_nudge("rel", d * 0.02)
+    end
+    shape_i = 0
   elseif op then
     if k1 then
       if n == 2 then params:delta(pid(op, "pan"), d)
@@ -687,7 +761,9 @@ function key(n, z)
       k2_used = false
     else
       k2 = false
-      if not k2_used then morph() end
+      if not k2_used then
+        if PAGES[page] == "env" then env_random() else morph() end
+      end
     end
   elseif n == 3 then
     if z == 1 then
@@ -695,7 +771,9 @@ function key(n, z)
       k3_used = false
     else
       k3 = false
-      if not k3_used then randomize() end
+      if not k3_used then
+        if PAGES[page] == "env" then env_next_shape() else randomize() end
+      end
     end
   end
   dirty()
@@ -937,6 +1015,35 @@ function redraw()
     screen.level(3)
     screen.move(0, 63)
     screen.text("K2 tweak  K3 rnd")
+  elseif PAGES[page] == "env" then
+    local ops = audible_ops()
+    local names = {}
+    for i, o in ipairs(ops) do names[i] = tostring(o) end
+    screen.level(6)
+    screen.move(70, 8)
+    screen.text(shape_i > 0 and SHAPES[shape_i].n or "-")
+
+    screen.level(4)
+    screen.move(0, 20)
+    screen.text("audible ops " .. table.concat(names, " "))
+
+    local a, dc, su, re = env_mean("atk"), env_mean("dec"), env_mean("sus"), env_mean("rel")
+    env_bar(0, 27, 10, 20, util.clamp(a, 0, 1))
+    env_bar(12, 27, 10, 20, util.clamp(dc, 0, 1))
+    env_bar(24, 27, 10, 20, util.clamp(su, 0, 1))
+    env_bar(36, 27, 10, 20, util.clamp(re, 0, 1))
+    screen.level(15)
+    screen.move(50, 34)
+    screen.text("A " .. fmt_ms(atk_sec(a)))
+    screen.move(50, 43)
+    screen.text(string.format("D %s  R %s", fmt_ms(dec_sec(dc)), fmt_ms(rel_sec(re))))
+    screen.level(4)
+    screen.move(50, 52)
+    screen.text("S " .. fmt_num(sus_lvl(su), 2))
+
+    screen.level(3)
+    screen.move(0, 63)
+    screen.text("K2 rnd  K3 shape")
   elseif op then
     local focus
     if k1 then focus = "pan/env"
