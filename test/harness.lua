@@ -99,10 +99,19 @@ params:set("bend_down", 24)
 params:set("bend_up", 2)
 params:set("bend_down", 2)
 assert(pcall(redraw))
+for d = 1, 3 do
+  params:set("display", d)
+  assert(pcall(redraw))
+  params:set("mod", 0.5)
+  assert(pcall(redraw))
+  params:set("mod", 0)
+end
+params:set("display", 2)
 for i = 1, 25 do
   params:set("preset", i)
   assert(pcall(redraw))
 end
+params:set("display", 1)
 
 -- walk pages with E1, then drive keys/encs on each
 for _ = 1, 8 do

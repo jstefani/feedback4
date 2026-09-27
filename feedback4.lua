@@ -15,9 +15,12 @@
 -- ALGO  E2 cell    E3 amt
 -- MACRO E2 dest    E3 scale
 --       hold K2 which
--- K2 tweak (near current)
--- K3 randomize patch
+-- K2 tweak  K3 randomize
+--   play: whole patch
+--   other pages: that page only
 -- panic: PARAMS all notes off
+-- PARAMS play display:
+--   wireframe / ambient / off
 -- midi in. pitchbend + mod wheel.
 -- PARAMS for rest.
 
@@ -320,9 +323,8 @@ local function is_carrier(skel, op)
   return false
 end
 
--- K3: new patch. sparse algorithm, simple ratios, playable envelopes.
--- transpose / amp / macros left alone — those are performance controls.
-local function randomize()
+-- new sparse algorithm. returns the skeleton so callers know the carriers.
+local function randomize_matrix()
   local skel = pick(SKELS)
   for op = 1, OPS do
     for d = 1, 4 do pset(op, "m" .. d, 0) end
@@ -340,64 +342,119 @@ local function randomize()
       pset(from, "m" .. to, 0.05 + math.random() * 0.4)
     end
   end
+  return skel
+end
 
+-- one op's tone + envelope. sends left alone (algo page owns those).
+local function randomize_op(op, carrier)
+  pset(op, "atk", rnd_atk())
+  pset(op, "dec", rnd_dec())
+  pset(op, "sus", rnd_sus())
+  pset(op, "rel", rnd_rel())
+  pset(op, "ratio", rnd_ratio(carrier))
+  if carrier then
+    pset(op, "out", 0.45 + math.random() * 0.55)
+  else
+    pset(op, "out", (math.random() < 0.7) and 0 or (math.random() * 0.35))
+  end
+  pset(op, "pan", 0.35 + math.random() * 0.3)
+  -- ratio env sweeps the fundamental off the harmonic series
+  if musical() or math.random() >= 0.2 then
+    pset(op, "envsrc", 0)
+    pset(op, "envamt", 0)
+  else
+    pset(op, "envsrc", math.random(0, 4))
+    pset(op, "envamt", (math.random() * 0.8) * ((math.random() < 0.5) and 1 or -1))
+  end
+end
+
+-- K3 on play: new patch. sparse algorithm, simple ratios, playable envelopes.
+-- transpose / amp / macros left alone — those are performance controls.
+local function randomize()
+  local skel = randomize_matrix()
   for op = 1, OPS do
-    pset(op, "atk", rnd_atk())
-    pset(op, "dec", rnd_dec())
-    pset(op, "sus", rnd_sus())
-    pset(op, "rel", rnd_rel())
-    pset(op, "ratio", rnd_ratio(is_carrier(skel, op)))
-    if is_carrier(skel, op) then
-      pset(op, "out", 0.45 + math.random() * 0.55)
-    else
-      pset(op, "out", (math.random() < 0.7) and 0 or (math.random() * 0.35))
-    end
-    pset(op, "pan", 0.35 + math.random() * 0.3)
-    -- ratio env sweeps the fundamental off the harmonic series
-    if musical() or math.random() >= 0.2 then
-      pset(op, "envsrc", 0)
-      pset(op, "envamt", 0)
-    else
-      pset(op, "envsrc", math.random(0, 4))
-      pset(op, "envamt", (math.random() * 0.8) * ((math.random() < 0.5) and 1 or -1))
-    end
+    randomize_op(op, is_carrier(skel, op))
   end
   flash("RND")
 end
 
--- K2: walk the current patch a little. zeros in the matrix stay zero so
--- the algorithm does not fill in. env src stays put.
-local function morph()
-  local function nudge(op, name, abs_amt, rel_amt)
-    local cur = params:get(pid(op, name))
-    local delta = (math.random() * 2 - 1) * abs_amt
-    if rel_amt and rel_amt > 0 then
-      delta = delta + cur * (math.random() * 2 - 1) * rel_amt
-    end
-    pset(op, name, cur + delta)
+-- useful scale per macro destination (param units; macro value is 0-1)
+local MACRO_SCALE = {
+  atk = 1, dec = 1, sus = 1, rel = 1,
+  m1 = 1.5, m2 = 1.5, m3 = 1.5, m4 = 1.5,
+  ratio = 8, out = 1, envsrc = 4, envamt = 1, pan = 1,
+}
+local SIGNED = { m1 = true, m2 = true, m3 = true, m4 = true, ratio = true, envamt = true }
+
+-- K3 on macro page: new dests + scales. macro values (performance) stay,
+-- and nothing is applied until the value moves (same as editing a dest).
+local function randomize_macros()
+  for i = 1, 3 do
+    local d, name
+    repeat
+      d = math.random(1, 56)
+      local _; _, name = dest_id(d)
+    until name ~= nil
+    local sc = MACRO_SCALE[name] * (0.3 + math.random() * 0.7)
+    if SIGNED[name] and math.random() < 0.25 then sc = -sc end
+    params:set("macro_" .. i .. "_dest", d)
+    params:set("macro_" .. i .. "_scale", sc)
   end
+  flash("RND MAC")
+end
+
+local function nudge(op, name, abs_amt, rel_amt)
+  local cur = params:get(pid(op, name))
+  local delta = (math.random() * 2 - 1) * abs_amt
+  if rel_amt and rel_amt > 0 then
+    delta = delta + cur * (math.random() * 2 - 1) * rel_amt
+  end
+  pset(op, name, cur + delta)
+end
+
+-- one op's tone + envelope. env src stays put.
+local function morph_op(op)
+  nudge(op, "atk", 0.05, 0.12)
+  nudge(op, "dec", 0.06, 0.1)
+  nudge(op, "sus", 0.06, 0.08)
+  nudge(op, "rel", 0.05, 0.1)
+  if musical() then
+    pset(op, "ratio", neighbor_harmonic(params:get(pid(op, "ratio"))))
+  else
+    nudge(op, "ratio", 0.08, 0.06)
+    nudge(op, "envamt", 0.12, 0.1)
+  end
+  nudge(op, "out", 0.06, 0.08)
+  nudge(op, "pan", 0.04, 0)
+end
+
+-- zeros in the matrix stay zero so the algorithm does not fill in.
+local function morph_matrix()
   for op = 1, OPS do
-    nudge(op, "atk", 0.05, 0.12)
-    nudge(op, "dec", 0.06, 0.1)
-    nudge(op, "sus", 0.06, 0.08)
-    nudge(op, "rel", 0.05, 0.1)
-    if musical() then
-      pset(op, "ratio", neighbor_harmonic(params:get(pid(op, "ratio"))))
-    else
-      nudge(op, "ratio", 0.08, 0.06)
-      nudge(op, "envamt", 0.12, 0.1)
-    end
-    nudge(op, "out", 0.06, 0.08)
-    nudge(op, "pan", 0.04, 0)
     for d = 1, 4 do
-      local id = pid(op, "m" .. d)
-      local cur = params:get(id)
-      if math.abs(cur) >= 0.001 then
+      if math.abs(params:get(pid(op, "m" .. d))) >= 0.001 then
         nudge(op, "m" .. d, 0.08, 0.12)
       end
     end
   end
+end
+
+-- K2 on play: walk the current patch a little.
+local function morph()
+  for op = 1, OPS do morph_op(op) end
+  morph_matrix()
   flash("TWEAK")
+end
+
+-- K2 on macro page: scales drift, dests stay.
+local function morph_macros()
+  for i = 1, 3 do
+    local id = "macro_" .. i .. "_scale"
+    local cur = params:get(id)
+    local delta = (math.random() * 2 - 1) * 0.05 + cur * (math.random() * 2 - 1) * 0.12
+    params:set(id, util.clamp(cur + delta, -100, 100))
+  end
+  flash("TWEAK MAC")
 end
 
 -- env page: ops that reach the output. falls back to all if none do.
@@ -453,6 +510,48 @@ local function env_next_shape()
     pset(op, "rel", sh.rel)
   end
   flash(sh.n)
+end
+
+local function op_page()
+  if page >= 3 and page <= 6 then return page - 2 end
+  return nil
+end
+
+-- K2 / K3 taps act on what the current page shows
+local function page_tweak()
+  local name = PAGES[page]
+  local op = op_page()
+  if name == "env" then
+    env_random()
+  elseif op then
+    morph_op(op)
+    flash("TWEAK OP" .. op)
+  elseif name == "algo" then
+    morph_matrix()
+    flash("TWEAK ALG")
+  elseif name == "macro" then
+    morph_macros()
+  else
+    morph()
+  end
+end
+
+local function page_random()
+  local name = PAGES[page]
+  local op = op_page()
+  if name == "env" then
+    env_next_shape()
+  elseif op then
+    randomize_op(op, params:get(pid(op, "out")) > 0.001)
+    flash("RND OP" .. op)
+  elseif name == "algo" then
+    randomize_matrix()
+    flash("RND ALG")
+  elseif name == "macro" then
+    randomize_macros()
+  else
+    randomize()
+  end
 end
 
 -- mean of a slider across the audible ops, for the env page display
@@ -579,6 +678,9 @@ function init()
     if not loading then randomize() end
   end)
 
+  params:add_option("display", "play display", {"wireframe", "ambient", "off"}, 1)
+  params:set_action("display", function() dirty() end)
+
   params:add_option("musical", "musical fm", {"off", "on"}, 2)
   params:set_action("musical", function(x)
     if x == 2 and not loading then
@@ -664,7 +766,7 @@ function init()
   end
 
   local redraw_metro = metro.init(function()
-    if page == 1 then screen_dirty = true end
+    if page == 1 and params:get("display") ~= 3 then screen_dirty = true end
     if screen_dirty then
       screen_dirty = false
       redraw()
@@ -676,11 +778,6 @@ end
 
 function cleanup()
   all_off()
-end
-
-local function op_page()
-  if page >= 3 and page <= 6 then return page - 2 end
-  return nil
 end
 
 function enc(n, d)
@@ -761,9 +858,7 @@ function key(n, z)
       k2_used = false
     else
       k2 = false
-      if not k2_used then
-        if PAGES[page] == "env" then env_random() else morph() end
-      end
+      if not k2_used then page_tweak() end
     end
   elseif n == 3 then
     if z == 1 then
@@ -771,9 +866,7 @@ function key(n, z)
       k3_used = false
     else
       k3 = false
-      if not k3_used then
-        if PAGES[page] == "env" then env_next_shape() else randomize() end
-      end
+      if not k3_used then page_random() end
     end
   end
   dirty()
@@ -979,6 +1072,66 @@ local function draw_patch3d(t)
   end
 end
 
+-- ambient: four soft orbs drifting on slow lissajous paths. orb size =
+-- op out, faint breathing lines = FM sends, a second ring = self-feedback.
+-- held notes only warm the picture a little. no camera, no sparks.
+local function draw_ambient(t)
+  local fade = 1 - util.clamp(params:get("mod"), 0, 1)
+  if fade < 0.02 then return end
+  local function dim(lvl)
+    return math.max(1, math.floor(lvl * fade + 0.5))
+  end
+  local nheld = held_stats()
+  local warm = (nheld > 0) and 1 or 0
+  local ts = t * 0.12
+
+  local pos = {}
+  for op = 1, OPS do
+    local ph = op * 1.57
+    local x = 64 + 38 * math.sin(ts * (0.61 + op * 0.07) + ph)
+    local y = 30 + 13 * math.sin(ts * (0.43 + op * 0.05) * 1.3 + ph * 0.7)
+    pos[op] = {x, y}
+  end
+
+  screen.line_width(1)
+  for from = 1, OPS do
+    for to = 1, OPS do
+      if from ~= to then
+        local amt = math.abs(params:get(pid(from, "m" .. to)))
+        if amt >= 0.02 then
+          local breath = 0.6 + 0.4 * math.sin(ts * 3 + from * 1.1 + to * 0.4)
+          local lvl = util.clamp(math.floor((1.5 + amt * 3) * breath + warm), 1, 6)
+          screen.level(dim(lvl))
+          screen.move(pos[from][1], pos[from][2])
+          screen.line(pos[to][1], pos[to][2])
+          screen.stroke()
+        end
+      end
+    end
+  end
+
+  for op = 1, OPS do
+    local out = util.clamp(params:get(pid(op, "out")), 0, 1)
+    local x, y = pos[op][1], pos[op][2]
+    local r = 1.5 + out * 6 + warm * 0.8 + 0.4 * math.sin(ts * 2.2 + op)
+    -- move to the arc start first: cairo joins any current point (e.g.
+    -- the end of the header text) to the arc with a straight line.
+    screen.level(dim(util.clamp(math.floor(2 + out * 5 + warm * 2), 1, 10)))
+    screen.move(x + r, y)
+    screen.circle(x, y, r)
+    screen.stroke()
+    if math.abs(params:get(pid(op, "m" .. op))) >= 0.02 then
+      screen.level(dim(2))
+      screen.move(x + r + 3, y)
+      screen.circle(x, y, r + 3)
+      screen.stroke()
+    end
+    screen.level(dim(3 + warm * 4))
+    screen.pixel(x, y)
+    screen.fill()
+  end
+end
+
 function redraw()
   if norns.menu.status() then return end
   screen.clear()
@@ -997,7 +1150,12 @@ function redraw()
 
   local op = op_page()
   if page == 1 then
-    draw_patch3d(util.time())
+    local disp = params:get("display")
+    if disp == 1 then
+      draw_patch3d(util.time())
+    elseif disp == 2 then
+      draw_ambient(util.time())
+    end
 
     local tr = params:get("transpose")
     screen.level(k1 and 4 or 10)
