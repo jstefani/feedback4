@@ -897,8 +897,10 @@ end
 
 local function env_bar(x, y, w, h, v)
   v = util.clamp(v, 0, 1)
+  -- +0.5 centers the 1px stroke on pixels; at x = 0 an unshifted stroke
+  -- straddles the screen edge and the left side is lost.
   screen.level(2)
-  screen.rect(x, y, w, h)
+  screen.rect(x + 0.5, y + 0.5, w - 1, h - 1)
   screen.stroke()
   if v > 0 then
     local bh = math.max(1, math.floor(v * (h - 2)))
