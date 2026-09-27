@@ -21,7 +21,7 @@ rsync -va --exclude .git --exclude pd . norns.local:~/dust/code/feedback4/
 |  |  |
 |---|---|
 | E1 | page: play / env / op1–4 / algo / macro |
-| **play** | E2 preset · E3 transpose · K1+E3 amp · animated view of the 4-op patch |
+| **play** | E2 preset · E3 transpose · K1+E3 amp · animated view of the 4-op patch. text fades out when idle, back on any key/encoder |
 | **env** | amp envelope of every audible op (out > 0) · E2 attack · E3 decay + release · K2 tap random envelopes · K3 tap step shapes (perc, pluck, stab, gate, sustain, pad, swell, long rel) |
 | **op** | E2 ratio · E3 out · hold K2+E A/D · hold K3+E S/R · K1+E pan / env amt |
 | **algo** | E2 cell · E3 send amount (4×4 PM matrix) |

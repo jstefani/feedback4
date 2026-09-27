@@ -48,6 +48,7 @@ local loading = false
 local applying_macro = false
 local hud = nil
 local hud_t = 0
+local ui_t = 0 -- last control touch; play-page text fades after this
 
 local active = {}
 local held = {}
@@ -205,10 +206,28 @@ local function all_off()
   dirty()
 end
 
+-- any control touch: show the play-page text again
+local function touch()
+  ui_t = util.time()
+  dirty()
+end
+
 local function flash(msg)
   hud = msg
   hud_t = util.time()
-  dirty()
+  touch()
+end
+
+-- play page text visibility, 0..1. full while a key is held or for a
+-- couple of seconds after a touch, then fades out over a second so the
+-- screen is only the visualization during normal play. text-only
+-- display (off) keeps the text up.
+local UI_HOLD, UI_FADE = 2.0, 1.0
+local function ui_alpha()
+  if params:get("display") == 3 or k1 or k2 or k3 then return 1 end
+  local age = util.time() - ui_t
+  if age < UI_HOLD then return 1 end
+  return util.clamp(1 - (age - UI_HOLD) / UI_FADE, 0, 1)
 end
 
 local function pset(op, name, val)
@@ -781,6 +800,7 @@ function cleanup()
 end
 
 function enc(n, d)
+  touch()
   if k2 then k2_used = true end
   if k3 then k3_used = true end
   if n == 1 then
@@ -850,6 +870,7 @@ function enc(n, d)
 end
 
 function key(n, z)
+  touch()
   if n == 1 then
     k1 = z == 1
   elseif n == 2 then
@@ -1141,12 +1162,19 @@ function redraw()
   screen.font_face(1)
   screen.font_size(8)
 
-  screen.level(5)
-  screen.move(128, 8)
+  -- play page text fades out when idle; other pages always show it
+  local ui = (page == 1) and ui_alpha() or 1
+  local function ui_lvl(lvl)
+    return math.floor(lvl * ui + 0.5)
+  end
+
   if hud and (util.time() - hud_t) < 0.8 then
     screen.level(15)
+    screen.move(128, 8)
     screen.text_right(hud)
-  else
+  elseif ui_lvl(5) > 0 then
+    screen.level(ui_lvl(5))
+    screen.move(128, 8)
     screen.text_right(PAGES[page])
   end
 
@@ -1159,13 +1187,16 @@ function redraw()
       draw_ambient(util.time())
     end
 
-    local tr = params:get("transpose")
-    screen.level(k1 and 4 or 10)
-    screen.move(0, 54)
-    screen.text(string.format("P%.0f  T%s  A%s",
-      params:get("preset"),
-      (tr > 0 and "+" or "") .. tostring(tr),
-      fmt_num(params:get("amp"), 2)))
+    local lvl = ui_lvl(k1 and 4 or 10)
+    if lvl > 0 then
+      local tr = params:get("transpose")
+      screen.level(lvl)
+      screen.move(0, 54)
+      screen.text(string.format("P%.0f  T%s  A%s",
+        params:get("preset"),
+        (tr > 0 and "+" or "") .. tostring(tr),
+        fmt_num(params:get("amp"), 2)))
+    end
     -- screen.level(8)
     -- screen.move(128, 54)
     -- screen.text_right(held_names())
