@@ -713,6 +713,12 @@ function init()
   params:add_number("midi_channel", "midi channel", 0, 16, 0, function(p)
     return p:get() == 0 and "all" or tostring(p:get())
   end)
+  -- held notes would miss their note-off (and a bend its return to centre)
+  -- once the filter moves off their channel
+  params:set_action("midi_channel", function()
+    bend = 0
+    all_off()
+  end)
 
   params:add_number("bend_up", "bend up", 0, 24, 2, function(p)
     return string.format("%.0f st", p:get())
